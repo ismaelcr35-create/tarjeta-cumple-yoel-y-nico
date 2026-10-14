@@ -26,7 +26,12 @@ async function prepararBD() {
 }
 
 app.use(express.json({ limit: '4mb' }));
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+// La página siempre se pide de nuevo (así los cambios se ven al momento);
+// las fotos y los coches se guardan una hora en el móvil para que cargue rápido.
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1h',
+  setHeaders: (res, file) => { if (file.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); }
+}));
 
 // Todas las firmas guardadas: { yo: "data:image/png;base64,...", ... }
 app.get('/api/firmas', async (req, res) => {
