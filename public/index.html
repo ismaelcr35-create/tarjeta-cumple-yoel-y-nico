@@ -314,26 +314,43 @@ function compose(){
   layers=pts;
 }
 function buildLayers(){compose();}
+// La pintura se revela con una máscara: cada fotograma añade los puntos de spray de golpe
+// (un solo trazo) y copia la pieza a través de la máscara. Va por tiempo, no por fotogramas,
+// así dura lo mismo en un móvil lento que en un ordenador.
 function paint(){
   cancelAnimationFrame(raf);ctx.clearRect(0,0,W,H);
-  const pat=ctx.createPattern(FINAL,'no-repeat');
-  const frames=reduce?[1,1,1,1,1,1]:[45,55,45,45,110,25];         // duración de cada pasada
+  const M=newLayer(),m=M.getContext('2d');m.fillStyle='#fff';
+  const MS=newLayer(),ms=MS.getContext('2d');
+  const dur=reduce?[0,0,0,0,0,0]:[.25,.3,.25,.25,.65,.2];         // segundos por capa (≈ 2 s en total)
   const mist=[null,PAL.cyan,null,null,PAL.pink,null];
-  let li=0,i=0;
-  function frame(){
-    if(li<layers.length){
-      const P=layers[li],per=Math.ceil(P.length/frames[li]),end=Math.min(i+per,P.length);
-      ctx.fillStyle=pat;
-      for(;i<end;i++){const [x,y]=P[i];ctx.beginPath();ctx.arc(x+1,y+1,3.4,0,7);ctx.fill();}
-      if(mist[li]&&!reduce){ctx.fillStyle=mist[li];ctx.globalAlpha=.35;
-        for(let k=0;k<12;k++){const q=P[Math.min(P.length-1,i-1-Math.floor(Math.random()*per))];if(!q)break;
-          ctx.beginPath();ctx.arc(q[0]+(Math.random()-.5)*26,q[1]+(Math.random()-.5)*26,Math.random()*1.4,0,7);ctx.fill();}
-        ctx.globalAlpha=1;}
-      if(i>=P.length){li++;i=0;}
-      raf=requestAnimationFrame(frame);
-    }else{ctx.drawImage(FINAL,0,0);stopNoise();driveCar();}
+  let li=0,i=0,t0=null;
+  if(withSound)startNoise(dur.reduce((a,b)=>a+b,0));
+  function frame(now){
+    if(t0===null)t0=now;
+    while(li<layers.length){
+      const P=layers[li],d=dur[li]*1000;
+      const target=d?Math.min(P.length,Math.floor(P.length*(now-t0)/d)):P.length;
+      if(target>i){
+        m.beginPath();
+        for(let k=i;k<target;k++){const x=P[k][0]+1,y=P[k][1]+1;m.moveTo(x+3.4,y);m.arc(x,y,3.4,0,7);}
+        m.fill();
+        if(mist[li]&&!reduce){ms.fillStyle=mist[li];ms.globalAlpha=.35;ms.beginPath();
+          for(let k=0;k<10;k++){const q=P[i+Math.floor(Math.random()*(target-i))];
+            const x=q[0]+(Math.random()-.5)*26,y=q[1]+(Math.random()-.5)*26,r=Math.random()*1.4+.2;ms.moveTo(x+r,y);ms.arc(x,y,r,0,7);}
+          ms.fill();ms.globalAlpha=1;}
+        i=target;
+      }
+      if(i>=P.length){li++;i=0;t0=now;continue;}
+      break;
+    }
+    ctx.clearRect(0,0,W,H);
+    ctx.drawImage(FINAL,0,0);
+    ctx.globalCompositeOperation='destination-in';ctx.drawImage(M,0,0);
+    ctx.globalCompositeOperation='source-over';ctx.drawImage(MS,0,0);
+    if(li<layers.length)raf=requestAnimationFrame(frame);
+    else{ctx.clearRect(0,0,W,H);ctx.drawImage(FINAL,0,0);ctx.drawImage(MS,0,0);stopNoise();driveCar();}
   }
-  frame();
+  raf=requestAnimationFrame(frame);
 }
 
 /* ---------- Rotonda: el coche entra, da tres vueltas derrapando y sale ---------- */
@@ -395,8 +412,8 @@ function drawCar(x,y,ang){
   cc.fillStyle='#ff2a2a';cc.fillRect(-29,-11,3,5);cc.fillRect(-29,6,3,5);
   cc.restore();
 }
-// trayectoria: recta de entrada, 3 vueltas en sentido antihorario y salida por la derecha
-const SPEED=3.6,OMEGA=SPEED/R_CAR,LAPS=3;
+// trayectoria: recta de entrada, 3 vueltas en sentido antihorario y salida por la derecha (t en segundos)
+const SPEED=430,OMEGA=SPEED/R_CAR,LAPS=3;
 function pathAt(t){
   const entryX=CX-R_CAR,entryT=(entryX+60)/SPEED;
   if(t<entryT){const x=-60+t*SPEED;const y=LANE+(CY-LANE)*Math.max(0,(x-(entryX-120))/120);return {x,y,ang:0,drift:0};}
@@ -404,97 +421,130 @@ function pathAt(t){
   if(t<entryT+turnT){
     const th=Math.PI-(t-entryT)*OMEGA,x=CX+R_CAR*Math.cos(th),y=CY+R_CAR*Math.sin(th);
     const head=Math.atan2(-Math.cos(th),Math.sin(th));
-    const s=Math.min(1,(t-entryT)/25,(entryT+turnT-t)/25);
-    const k=Math.min(1,(t-entryT)/14,(entryT+turnT-t)/14);   // suaviza el giro al entrar y salir
+    const s=Math.min(1,(t-entryT)/.25,(entryT+turnT-t)/.25);
+    const k=Math.min(1,(t-entryT)/.15,(entryT+turnT-t)/.15);   // suaviza el giro al entrar y salir
     return {x,y,ang:(head-0.55*s)*k,drift:s};
   }
   const x=CX+R_CAR+(t-entryT-turnT)*SPEED;
   return {x,y:CY+(LANE-CY)*Math.min(1,(x-CX-R_CAR)/120),ang:0,drift:0,done:x>RW+70};
 }
 function local(p,lx,ly){const c=Math.cos(p.ang),s=Math.sin(p.ang);return [p.x+lx*c-ly*s,p.y+lx*s+ly*c];}
-// El sonido sigue al coche fotograma a fotograma: el chirrido solo suena al derrapar
-// y todo se apaga en cuanto el coche sale de la pantalla.
+
+/* ---------- Sonido ---------- */
+function ac(){
+  try{audio=audio||new (window.AudioContext||window.webkitAudioContext)();if(audio.state==='suspended')audio.resume();}catch(e){audio=null;}
+  return audio;
+}
+let noiseBuf=null;
+function getNoise(){
+  if(noiseBuf)return noiseBuf;
+  const len=audio.sampleRate*2;noiseBuf=audio.createBuffer(1,len,audio.sampleRate);
+  const ch=noiseBuf.getChannelData(0);let last=0;
+  for(let k=0;k<len;k++){const w=Math.random()*2-1;last=last*.6+w*.4;ch[k]=last;}   // ruido algo más suave que el blanco
+  return noiseBuf;
+}
+// spray: siseo con pulsaciones, como cuando se aprieta y se suelta la boquilla
+function startNoise(seconds){
+  if(!ac())return;
+  stopNoise();
+  try{
+    const now=audio.currentTime;
+    const src=audio.createBufferSource();src.buffer=getNoise();src.loop=true;
+    const hp=audio.createBiquadFilter();hp.type='highpass';hp.frequency.value=1800;
+    const bp=audio.createBiquadFilter();bp.type='peaking';bp.frequency.value=6000;bp.gain.value=6;bp.Q.value=.8;
+    const g=audio.createGain();g.gain.setValueAtTime(0,now);
+    const end=now+(seconds||4);let t=now+.05;
+    while(t<end){const len=.25+Math.random()*.25;
+      g.gain.setTargetAtTime(.16,t,.03);g.gain.setTargetAtTime(.025,t+len,.04);t+=len+.08+Math.random()*.06;}
+    g.gain.setTargetAtTime(0,end,.08);
+    src.connect(hp).connect(bp).connect(g).connect(audio.destination);src.start(now);src.stop(end+.6);
+    noise={src,g};
+  }catch(e){noise=null;}
+}
+function stopNoise(){
+  if(!noise)return;const n=noise;noise=null;
+  try{const now=audio.currentTime;n.g.gain.cancelScheduledValues(now);n.g.gain.setTargetAtTime(0,now,.05);n.src.stop(now+.3);}catch(e){}
+}
+// coche: motor con dos osciladores y "petardeo", y chirrido de ruedas que solo suena al derrapar
 let snd=null;
 function carSoundStart(){
+  if(!ac())return;
   try{
-    audio=audio||new (window.AudioContext||window.webkitAudioContext)();
-    const now=audio.currentTime;
-    const o=audio.createOscillator(),f=audio.createBiquadFilter(),eg=audio.createGain();
-    o.type='sawtooth';o.frequency.setValueAtTime(50,now);f.type='lowpass';f.frequency.value=420;
-    eg.gain.setValueAtTime(0,now);eg.gain.linearRampToValueAtTime(.15,now+.4);
-    o.connect(f).connect(eg).connect(audio.destination);o.start(now);
-    const len=audio.sampleRate,b=audio.createBuffer(1,len,audio.sampleRate),ch=b.getChannelData(0);
-    for(let k=0;k<len;k++)ch[k]=Math.random()*2-1;
-    const n=audio.createBufferSource();n.buffer=b;n.loop=true;
-    const bp=audio.createBiquadFilter();bp.type='bandpass';bp.frequency.value=1700;bp.Q.value=6;
-    const ng=audio.createGain();ng.gain.value=0;
-    n.connect(bp).connect(ng).connect(audio.destination);n.start(now);
-    snd={o,eg,n,ng};
+    const now=audio.currentTime,osc=(type,f)=>{const o=audio.createOscillator();o.type=type;o.frequency.value=f;o.start(now);return o;};
+    const master=audio.createGain();master.gain.setValueAtTime(0,now);master.gain.setTargetAtTime(.5,now,.2);master.connect(audio.destination);
+    const o1=osc('sawtooth',60),o2=osc('square',30);
+    const m1=audio.createGain();m1.gain.value=.18;const m2=audio.createGain();m2.gain.value=.12;
+    const lp=audio.createBiquadFilter();lp.type='lowpass';lp.frequency.value=380;lp.Q.value=1.2;
+    const am=audio.createGain();am.gain.value=.7;
+    const lfo=osc('sine',24),lg=audio.createGain();lg.gain.value=.3;lfo.connect(lg).connect(am.gain);
+    o1.connect(m1).connect(lp);o2.connect(m2).connect(lp);lp.connect(am).connect(master);
+    const sq=osc('triangle',950),vib=osc('sine',7),vg=audio.createGain();vg.gain.value=45;vib.connect(vg).connect(sq.frequency);
+    const sqg=audio.createGain();sqg.gain.value=0;sq.connect(sqg).connect(master);
+    const n=audio.createBufferSource();n.buffer=getNoise();n.loop=true;n.start(now);
+    const nb=audio.createBiquadFilter();nb.type='bandpass';nb.frequency.value=2200;nb.Q.value=2;
+    const ng=audio.createGain();ng.gain.value=0;n.connect(nb).connect(ng).connect(master);
+    snd={master,o1,o2,lfo,lp,sq,sqg,vib,n,ng};
   }catch(e){snd=null;}
 }
 function carSoundUpdate(p,fadeOut){
-  if(!snd)return;const now=audio.currentTime;
-  snd.o.frequency.setTargetAtTime(fadeOut?45:(p.drift>0.2?115:70),now,.25);
-  snd.ng.gain.setTargetAtTime(p.drift>0.2?.2*p.drift:0,now,.08);
-  if(fadeOut)snd.eg.gain.setTargetAtTime(0,now,.3);
+  if(!snd)return;const now=audio.currentTime,d=p.drift>0.2;
+  const f=fadeOut?45:(d?92:66);
+  snd.o1.frequency.setTargetAtTime(f,now,.3);snd.o2.frequency.setTargetAtTime(f/2,now,.3);
+  snd.lfo.frequency.setTargetAtTime(f*.38,now,.3);snd.lp.frequency.setTargetAtTime(d?650:400,now,.3);
+  snd.sqg.gain.setTargetAtTime(d?.05*p.drift:0,now,.1);snd.ng.gain.setTargetAtTime(d?.06*p.drift:0,now,.1);
+  if(fadeOut)snd.master.gain.setTargetAtTime(0,now,.35);
 }
 function carSoundStop(){
   if(!snd)return;const s=snd;snd=null;
-  try{const now=audio.currentTime;s.eg.gain.setTargetAtTime(0,now,.05);s.ng.gain.setTargetAtTime(0,now,.05);
-    s.o.stop(now+.3);s.n.stop(now+.3);}catch(e){}
+  try{const now=audio.currentTime;s.master.gain.cancelScheduledValues(now);s.master.gain.setTargetAtTime(0,now,.06);
+    [s.o1,s.o2,s.lfo,s.sq,s.vib,s.n].forEach(o=>o.stop(now+.4));}catch(e){}
 }
+
+/* ---------- Coche ---------- */
+const SMOKE=(()=>{const c=document.createElement('canvas');c.width=c.height=64;const x=c.getContext('2d');
+  const g=x.createRadialGradient(32,32,0,32,32,32);g.addColorStop(0,'rgba(215,210,222,1)');g.addColorStop(1,'rgba(215,210,222,0)');
+  x.fillStyle=g;x.fillRect(0,0,64,64);return c;})();
 function driveCar(){
   cancelAnimationFrame(carRaf);
   // si la rotonda no se ve en pantalla, baja hasta ella para que se vea el derrape
   const road=document.querySelector('.road'),rr=road.getBoundingClientRect();
   if(rr.top<0||rr.bottom>innerHeight)road.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center'});
-  if(reduce){cc.clearRect(0,0,RW,RH);const p=pathAt(150);drawCar(p.x,p.y,p.ang);return;}
+  if(reduce){cc.clearRect(0,0,RW,RH);const p=pathAt(4);drawCar(p.x,p.y,p.ang);return;}
   carSoundStop();
   if(withSound)carSoundStart();
-  const smoke=[];let t=0,prev=null;
-  function f(){
-    t++;
+  const smoke=[];let start=null,last=null,prev=null;
+  function f(now){
+    if(start===null){start=now;last=now;}
+    const t=(now-start)/1000,dt=Math.min(.05,(now-last)/1000);last=now;
     const p=pathAt(t);
-    // apaga el motor al llegar al borde derecho
     if(p.x>RW-40&&!p.drift)carSoundUpdate(p,true);else carSoundUpdate(p,false);
     if(p.done)carSoundStop();
     const rearL=local(p,-18,-13),rearR=local(p,-18,13);
     if(prev&&p.drift>0.2){
       sk.strokeStyle=`rgba(8,8,10,${.25+.3*p.drift})`;sk.lineWidth=5;sk.lineCap='round';
-      [[prev[0],rearL],[prev[1],rearR]].forEach(([a,b])=>{sk.beginPath();sk.moveTo(a[0],a[1]);sk.lineTo(b[0],b[1]);sk.stroke();});
+      sk.beginPath();sk.moveTo(prev[0][0],prev[0][1]);sk.lineTo(rearL[0],rearL[1]);sk.moveTo(prev[1][0],prev[1][1]);sk.lineTo(rearR[0],rearR[1]);sk.stroke();
     }
     prev=[rearL,rearR];
-    if(p.drift>0.2||t%4===0){const r=local(p,-30,(Math.random()-.5)*20);smoke.push({x:r[0],y:r[1],r:5,a:p.drift>0.2?.3:.14});}
+    if(!p.done&&(p.drift>0.2||Math.random()<.25)&&smoke.length<60){const r=local(p,-30,(Math.random()-.5)*20);smoke.push({x:r[0],y:r[1],r:6,a:p.drift>0.2?.32:.14});}
     cc.clearRect(0,0,RW,RH);
-    for(let k=smoke.length-1;k>=0;k--){const s=smoke[k];s.r+=.9;s.a*=.965;if(s.a<.01){smoke.splice(k,1);continue;}
-      cc.fillStyle=`rgba(205,200,212,${s.a})`;cc.beginPath();cc.arc(s.x,s.y,s.r,0,7);cc.fill();}
+    for(let k=smoke.length-1;k>=0;k--){const s=smoke[k];s.r+=55*dt;s.a*=Math.pow(.13,dt);if(s.a<.015){smoke.splice(k,1);continue;}
+      cc.globalAlpha=s.a;cc.drawImage(SMOKE,s.x-s.r,s.y-s.r,s.r*2,s.r*2);}
+    cc.globalAlpha=1;
     if(!p.done)drawCar(p.x,p.y,p.ang);
     if(!p.done||smoke.length)carRaf=requestAnimationFrame(f);
   }
-  f();
+  carRaf=requestAnimationFrame(f);
 }
 function resetRoad(){carSoundStop();cancelAnimationFrame(carRaf);sk.clearRect(0,0,RW,RH);cc.clearRect(0,0,RW,RH);}
-function startNoise(){
-  try{
-    audio=audio||new (window.AudioContext||window.webkitAudioContext)();
-    const len=audio.sampleRate*2,b=audio.createBuffer(1,len,audio.sampleRate),ch=b.getChannelData(0);
-    for(let k=0;k<len;k++)ch[k]=(Math.random()*2-1)*.35;
-    noise=audio.createBufferSource();noise.buffer=b;noise.loop=true;
-    const f=audio.createBiquadFilter();f.type='highpass';f.frequency.value=2500;
-    const g=audio.createGain();g.gain.value=.25;
-    noise.connect(f).connect(g).connect(audio.destination);noise.start();
-  }catch(e){}
-}
-function stopNoise(){try{noise&&noise.stop();}catch(e){}noise=null;}
 document.getElementById('again').onclick=()=>{withSound=false;stopNoise();resetRoad();paint();};
-document.getElementById('sound').onclick=()=>{withSound=true;stopNoise();resetRoad();startNoise();paint();};
+document.getElementById('sound').onclick=()=>{withSound=true;ac();stopNoise();resetRoad();paint();};
 // El navegador solo deja sonar audio tras un toque: la portada pide abrir la felicitación
 const ready=(document.fonts?document.fonts.load('200px "Bangers"').then(()=>document.fonts.ready):Promise.resolve())
   .catch(()=>{}).then(()=>{buildLayers();drawScene();});
 drawScene();
 const gate=document.getElementById('gate');
 document.getElementById('open').onclick=()=>{
-  withSound=true;startNoise();
+  withSound=true;ac();                       // desbloquea el audio con el toque
   ready.then(()=>{gate.hidden=true;paint();});
 };
 
